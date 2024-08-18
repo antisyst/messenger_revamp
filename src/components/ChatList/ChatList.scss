@@ -1,0 +1,32 @@
+.chat-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 30px 20px;
+
+  h1 {
+    color: var(--white);
+  }
+
+  .list-container {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    margin-top: 10px;
+    gap: 6px;
+    width: 100%;
+
+    .chat-item {
+      width: 100%;
+
+      a {
+        width: 100%;
+        font-size: 20px;
+        text-decoration: none;
+        color: var(--white);
+      }
+    }
+  }
+}

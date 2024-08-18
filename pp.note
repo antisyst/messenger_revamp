@@ -1,0 +1,381 @@
+src/api/apiService.ts:
+
+import axios, { AxiosResponse } from 'axios';
+
+interface Chat {
+  id: number;
+  title: string;
+}
+
+interface Message {
+  id: string;
+  text: string;
+  chatId: string;
+}
+
+interface CreateChatData {
+  title: string;
+}
+
+interface CreateMessageData {
+  text: string;
+  chatId: string;
+}
+
+const api = axios.create({
+  baseURL: 'https://revamp-it-messenger-0d84.twc1.net',
+});
+
+export const getChats = (): Promise<AxiosResponse<Chat[]>> => api.get('/chats');
+
+export const getChatById = (id: string): Promise<AxiosResponse<Chat>> =>
+  api.get(`/chats/${id}`);
+
+export const createChat = (data: CreateChatData): Promise<AxiosResponse<Chat>> =>
+  api.post('/chats', data);
+
+export const getMessages = (chatId: string): Promise<AxiosResponse<Message[]>> =>
+  api.get(`/chats/${chatId}/messages`);
+
+export const createMessage = (data: CreateMessageData): Promise<AxiosResponse<Message>> =>
+  api.post(`/chats/${data.chatId}/messages`, data);
+
+src/components/ChatList/ChatList.tsx:
+
+import React from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { getChats } from '../../api/apiService';
+import { Chat } from '../../types';
+import { Link } from 'react-router-dom';
+import './ChatList.scss';
+
+const ChatList: React.FC = () => {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['chats'],
+    queryFn: getChats,
+  });
+
+  if (isLoading) return <div>Loading...</div>;
+  if (error instanceof Error) return <div>Error: {error.message}</div>;
+
+  return (
+    <div className="chat-list">
+      <h1>Chats</h1>
+      <ul>
+        {data?.data.map((chat: Chat) => (
+          <li key={chat.id}>
+            <Link to={`/chat/${chat.id}`}>{chat.title}</Link>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+export default ChatList;
+
+src/components/ChatView/ChatView.tsx:
+
+import React from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { getMessages } from '../../api/apiService';
+import { Message } from '../../types';
+
+interface ChatViewProps {
+  chatId: string;
+}
+
+const ChatView: React.FC<ChatViewProps> = ({ chatId }) => {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['messages', chatId],
+    queryFn: () => getMessages(chatId),
+    refetchInterval: 5000,
+  });
+
+  if (isLoading) return <div>Loading messages...</div>;
+  if (error instanceof Error) return <div>Error: {error.message}</div>;
+
+  return (
+    <div className="message-list">
+      <ul>
+        {data?.data.map((message: Message) => (
+          <li key={message.id}>{message.text}</li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+export default ChatView;
+
+src/components/ChatViewWrapper/ChatViewWrapper.tsx:
+
+import React, { useEffect, useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import ChatView from '../ChatView/ChatView';
+import MessageInput from '../MessageInput/MessageInput';
+import { getChats } from '../../api/apiService';
+import { Chat } from '../../types';
+import './ChatViewWrapper.scss';
+
+const ChatViewWrapper: React.FC = () => {
+  const { id } = useParams<{ id: string }>();
+  const [chatAvailable, setChatAvailable] = useState<boolean | null>(null);
+
+  const { data: chats, isLoading, error } = useQuery({
+    queryKey: ['chats'],
+    queryFn: getChats,
+  });
+
+  useEffect(() => {
+    if (chats && id) {
+      const chatExists = chats.data.some((chat: Chat) => chat.id.toString() === id);
+      setChatAvailable(chatExists);
+    }
+  }, [chats, id]);
+
+  if (isLoading) return <div>Loading...</div>;
+  if (error) return <div>Error loading chats</div>;
+
+  if (chatAvailable === false) {
+    return <div className="chat-not-available">Chat is not found</div>;
+  }
+
+  if (chatAvailable === null) {
+    return <div>Checking chat availability...</div>;
+  }
+
+  return (
+    <div className="chat-view">
+      <ChatView chatId={id!} />
+      <MessageInput chatId={id!} />
+    </div>
+  );
+};
+
+export default ChatViewWrapper;
+
+src/components/MessageInput/MessageInput.tsx:
+
+import React, { useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { createMessage } from '../../api/apiService';
+import { CreateMessageData, Message } from '../../types';
+import { AxiosResponse } from 'axios';
+import './MessageInput.scss'
+
+interface MessageInputProps {
+  chatId: string;
+}
+
+const MessageInput: React.FC<MessageInputProps> = ({ chatId }) => {
+  const [text, setText] = useState('');
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation<AxiosResponse<Message>, Error, CreateMessageData>({
+    mutationFn: (data: CreateMessageData) => createMessage(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['messages', chatId] });
+      setText(''); 
+    },
+  });
+
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (text.trim()) {
+      mutation.mutate({ text, chatId });
+    }
+  };
+
+  return (
+    <form className="message-input-form" onSubmit={handleSubmit}>
+      <input
+        type="text"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="Type a message"
+      />
+      <button type="submit" disabled={mutation.status === 'pending'}>
+        {mutation.status === 'pending' ? 'Sending...' : 'Send'}
+      </button>
+    </form>
+  );
+};
+
+export default MessageInput;
+
+src/components/MessageInput/MessageInput.tsx:
+
+import React, { useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { createMessage } from '../../api/apiService';
+import { CreateMessageData, Message } from '../../types';
+import { AxiosResponse } from 'axios';
+import './MessageInput.scss'
+
+interface MessageInputProps {
+  chatId: string;
+}
+
+const MessageInput: React.FC<MessageInputProps> = ({ chatId }) => {
+  const [text, setText] = useState('');
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation<AxiosResponse<Message>, Error, CreateMessageData>({
+    mutationFn: (data: CreateMessageData) => createMessage(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['messages', chatId] });
+      setText(''); 
+    },
+  });
+
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (text.trim()) {
+      mutation.mutate({ text, chatId });
+    }
+  };
+
+  return (
+    <form className="message-input-form" onSubmit={handleSubmit}>
+      <input
+        type="text"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="Type a message"
+      />
+      <button type="submit" disabled={mutation.status === 'pending'}>
+        {mutation.status === 'pending' ? 'Sending...' : 'Send'}
+      </button>
+    </form>
+  );
+};
+
+export default MessageInput;
+
+src/types/index.ts:
+
+export interface Chat {
+    id: number;
+    title: string; 
+  }
+  
+  export interface Message {
+    id: string;
+    text: string;
+    chatId: string;
+  }
+  
+  export interface CreateChatData {
+    title: string;
+  }
+  
+  export interface CreateMessageData {
+    text: string;
+    chatId: string;
+  }
+
+  src/App.tsx:
+
+ import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import ChatList from './components/ChatList/ChatList';
+import ChatViewWrapper from './components/ChatViewWrapper/ChatViewWrapper';
+
+const queryClient = new QueryClient();
+
+function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <Router>
+        <div className="app-container">
+          <div className="chat-list-container">
+            <ChatList />
+          </div>
+          <div className="chat-view-container">
+            <Routes>
+              <Route path="/chat/:id" element={<ChatViewWrapper />} />
+              <Route path="/" element={<div>Select chat here</div>} />
+            </Routes>
+          </div>
+        </div>
+      </Router>
+    </QueryClientProvider>
+  );
+}
+
+export default App;
+
+ChatList.scss:
+
+.chat-list {
+    ul {
+      list-style: none;
+      padding: 0;
+      
+      li {
+        margin-bottom: 10px;
+  
+        a {
+          text-decoration: none;
+          color: #333;
+          padding: 8px;
+          display: block;
+          border-radius: 4px;
+          transition: background-color 0.2s;
+  
+          &:hover {
+            background-color: #eee;
+          }
+        }
+      }
+    }
+  }
+  
+  ChatViewWrapper.scss:
+
+.chat-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+  
+  .no-chat-selected {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100%;
+    font-size: 18px;
+    color: #888;
+  }
+  
+  MessageInput.scss:
+
+  .message-input-form {
+    display: flex;
+    margin-top: auto;
+    
+    input {
+      flex-grow: 1;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      margin-right: 10px;
+    }
+  
+    button {
+      padding: 8px 16px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background-color 0.2s;
+  
+      &:disabled {
+        background-color: #999;
+      }
+    }
+  }
+  
