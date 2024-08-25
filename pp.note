@@ -1,46 +1,231 @@
 src/api/apiService.ts:
 
 import axios, { AxiosResponse } from 'axios';
-
-interface Chat {
-  id: number;
-  title: string;
-}
-
-interface Message {
-  id: string;
-  text: string;
-  chatId: string;
-}
-
-interface CreateChatData {
-  title: string;
-}
-
-interface CreateMessageData {
-  text: string;
-  chatId: string;
-}
+import { Chat, Message, CreateChatData, TokenResponse } from '../types';
+import io from 'socket.io-client';
 
 const api = axios.create({
-  baseURL: 'https://revamp-it-messenger-0d84.twc1.net',
+  baseURL: 'http://188.225.72.100/', 
+  headers: {
+    'Content-Type': 'application/json',
+  },
 });
+
+export const socket = io('ws://188.225.72.100'); 
+
+export const authenticateWebSocket = (accessToken: string) => {
+  socket.emit('authenticate', { token: accessToken });
+};
+
+export const onMessageReceived = (callback: (message: Message) => void) => {
+  socket.on('message', callback);
+};
+
+export const sendMessage = (chatId: string, text: string, callback?: () => void) => {
+  console.log(`Sending message: ${text} to chat: ${chatId}`);  
+  socket.emit('sendMessage', { chatId, text }, () => {
+    console.log('Message sent and acknowledged by the server');
+    if (callback) callback();
+  });
+};
+
+
+export const createJwtToken = (email: string): Promise<AxiosResponse<TokenResponse>> => 
+  api.post('/tokens', { email });
+
+export const validateOtp = (email: string, otp: string): Promise<AxiosResponse<TokenResponse>> =>
+  api.post('/tokens', { email, otp });
 
 export const getChats = (): Promise<AxiosResponse<Chat[]>> => api.get('/chats');
 
-export const getChatById = (id: string): Promise<AxiosResponse<Chat>> =>
+export const getChatById = (id: string): Promise<AxiosResponse<Chat>> => 
   api.get(`/chats/${id}`);
 
-export const createChat = (data: CreateChatData): Promise<AxiosResponse<Chat>> =>
-  api.post('/chats', data);
+export const createChat = (data: CreateChatData, accessToken: string): Promise<AxiosResponse<Chat>> => 
+  api.post('/chats', data, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
 
-export const getMessages = (chatId: string): Promise<AxiosResponse<Message[]>> =>
+export const getMessages = (chatId: string): Promise<AxiosResponse<Message[]>> => 
   api.get(`/chats/${chatId}/messages`);
 
-export const createMessage = (data: CreateMessageData): Promise<AxiosResponse<Message>> =>
-  api.post(`/chats/${data.chatId}/messages`, data);
+src/components/AuthForm.tsx:
 
-src/components/ChatList/ChatList.tsx:
+import React, { useState, useRef, useEffect } from 'react';
+import { useMutation } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { createJwtToken, validateOtp } from '../../api/apiService';
+import LanguageSwitcher from '../Switcher/Switcher';
+import './AuthForm.scss';
+
+interface AuthFormProps {
+  onAuthSuccess: (accessToken: string) => void;
+}
+
+const AuthForm: React.FC<AuthFormProps> = ({ onAuthSuccess }) => {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [email, setEmail] = useState('');
+  const [otp, setOtp] = useState<string[]>(['', '', '', '', '', '']);
+  const [step, setStep] = useState(1);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [shake, setShake] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+
+  const requestOtpMutation = useMutation({
+    mutationFn: (email: string) => createJwtToken(email),
+    onSuccess: () => setStep(2),
+    onError: () => {
+      setErrorMessage(t('failedToSendOtp'));
+    }
+  });
+
+  const validateOtpMutation = useMutation({
+    mutationFn: () => validateOtp(email, otp.join('')),
+    onSuccess: (response) => {
+      const accessToken = response.data.access;
+      onAuthSuccess(accessToken);
+      navigate('/chat/1', { replace: true });
+    },
+    onError: () => {
+      setErrorMessage(t('invalidOtp'));
+      setShake(true);
+      setTimeout(() => setShake(false), 500);
+      setOtp(['', '', '', '', '', '']);
+      inputRefs.current[0]?.focus();
+    },
+    onSettled: () => {
+      setIsSubmitting(false);
+    }
+  });
+
+  const handleEmailSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    requestOtpMutation.mutate(email);
+  };
+
+  const handleOtpChange = (index: number, value: string) => {
+    if (/^\d$/.test(value)) {
+      const newOtp = [...otp];
+      newOtp[index] = value;
+      setOtp(newOtp);
+
+      if (index < 5 && value) {
+        inputRefs.current[index + 1]?.focus();
+      }
+
+      if (index === 5 && value) {
+        setIsSubmitting(true);
+        validateOtpMutation.mutate();
+      }
+    }
+  };
+
+  const handleOtpKeyDown = (index: number, event: React.KeyboardEvent) => {
+    if (event.key === 'Backspace') {
+      const newOtp = [...otp];
+      if (newOtp[index]) {
+        newOtp[index] = '';
+        setOtp(newOtp);
+      } else if (index > 0) {
+        inputRefs.current[index - 1]?.focus();
+        newOtp[index - 1] = '';
+        setOtp(newOtp);
+      }
+    }
+  };
+
+  const handleSubmitAll = () => {
+    if (!isSubmitting && otp.every((digit) => digit !== '')) {
+      setIsSubmitting(true);
+      validateOtpMutation.mutate();
+    } else if (!isSubmitting && step === 1) {
+      requestOtpMutation.mutate(email);
+    }
+  };
+
+  useEffect(() => {
+    if (otp.every((digit) => digit !== '') && step === 2 && !isSubmitting) {
+      setIsSubmitting(true);
+      validateOtpMutation.mutate();
+    }
+  }, [otp, step, validateOtpMutation, isSubmitting]);
+
+  useEffect(() => {
+    inputRefs.current[0]?.focus();
+  }, [step]);
+
+  return (
+    <div className="auth-form">
+      <LanguageSwitcher />
+      {step === 1 && (
+        <form onSubmit={handleEmailSubmit}>
+          <h1 className="main-content">{t('welcomeBack')}</h1>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder={t('enterYourEmail')}
+            required
+          />
+          <button type="submit" disabled={requestOtpMutation.status === 'pending'}>
+            {requestOtpMutation.status === 'pending' ? t('sending') : t('sendOtp')}
+          </button>
+        </form>
+      )}
+
+      {step === 2 && (
+        <div className='otp'>
+          <form className={`otp-form ${shake ? 'shake' : ''}`}>
+            <div className="otp-inputs">
+              {otp.map((digit, index) => (
+                <div
+                  key={index}
+                  className={`input-wrapper ${
+                    index === otp.findIndex((digit) => digit === '') ? 'active' : ''
+                  }`}
+                >
+                  <input
+                    type="text"
+                    maxLength={1}
+                    value={digit}
+                    onChange={(e) => handleOtpChange(index, e.target.value)}
+                    onKeyDown={(e) => handleOtpKeyDown(index, e)}
+                    ref={(el) => (inputRefs.current[index] = el)}
+                    className={`${digit ? 'filled' : ''} ${errorMessage ? 'error' : ''}`}
+                    aria-label={`OTP digit ${index + 1}`}
+                    aria-invalid={errorMessage ? 'true' : 'false'}
+                    autoFocus={index === 0}
+                    readOnly={index !== otp.findIndex((digit) => digit === '')}
+                    style={{
+                      pointerEvents: index === otp.findIndex((digit) => digit === '') ? 'auto' : 'none',
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+          </form>
+          <button onClick={handleSubmitAll} disabled={isSubmitting} className='validate-button'>
+            {isSubmitting ? t('validating') : t('validateOtp')}
+          </button>
+          {errorMessage && (
+            <div className="error-message">
+              <p>{errorMessage}</p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default AuthForm;
+
+src/components/ChatList.tsx:
 
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -55,327 +240,523 @@ const ChatList: React.FC = () => {
     queryFn: getChats,
   });
 
-  if (isLoading) return <div>Loading...</div>;
+  if (isLoading) return <div className='loader-layout'><div className='loader'/></div>;
   if (error instanceof Error) return <div>Error: {error.message}</div>;
+
+  const chats = data?.data;
 
   return (
     <div className="chat-list">
       <h1>Chats</h1>
-      <ul>
-        {data?.data.map((chat: Chat) => (
-          <li key={chat.id}>
-            <Link to={`/chat/${chat.id}`}>{chat.title}</Link>
-          </li>
+      <div className='list-container'>
+        {chats?.map((chat: Chat) => (
+          <div key={chat.id} className='chat-item'>
+            <Link to={`/chat/${chat.id}`} onClick={(e) => e.stopPropagation()}>
+              {chat.title}
+            </Link> 
+          </div>
         ))}
-      </ul>
+      </div>
     </div>
   );
 };
 
 export default ChatList;
 
-src/components/ChatView/ChatView.tsx:
+src/components/ChatView.tsx:
 
-import React from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { getMessages } from '../../api/apiService';
+import React, { useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Message } from '../../types';
+import './ChatView.scss';
 
 interface ChatViewProps {
-  chatId: string;
+  messages: Message[];
 }
 
-const ChatView: React.FC<ChatViewProps> = ({ chatId }) => {
-  const { data, isLoading, error } = useQuery({
-    queryKey: ['messages', chatId],
-    queryFn: () => getMessages(chatId),
-    refetchInterval: 5000,
-  });
+const ChatViewComponent: React.FC<ChatViewProps> = ({ messages }) => {
 
-  if (isLoading) return <div>Loading messages...</div>;
-  if (error instanceof Error) return <div>Error: {error.message}</div>;
+  const renderedMessages = useMemo(() => {
+    return messages.map((message) => (
+      <motion.div
+        key={message.id}
+        className="message-item"
+        initial={{ opacity: 0, translateY: 10 }}
+        animate={{ opacity: 1, translateY: 0 }}
+        exit={{ opacity: 0, translateY: 10 }}
+        transition={{ duration: 0.3 }}
+      >
+        <strong>{message.author?.email ?? 'Unknown Author'}:</strong> {message.text}
+      </motion.div>
+    ));
+  }, [messages]);
 
-  return (
-    <div className="message-list">
-      <ul>
-        {data?.data.map((message: Message) => (
-          <li key={message.id}>{message.text}</li>
-        ))}
-      </ul>
-    </div>
-  );
+  return <div className="message-list"><AnimatePresence>{renderedMessages}</AnimatePresence></div>;
 };
 
+export const ChatView = React.memo(ChatViewComponent);
 export default ChatView;
 
-src/components/ChatViewWrapper/ChatViewWrapper.tsx:
+src/components/ChatViewWrapper.tsx:
 
 import React, { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import ChatView from '../ChatView/ChatView';
 import MessageInput from '../MessageInput/MessageInput';
-import { getChats } from '../../api/apiService';
-import { Chat } from '../../types';
+import { getMessages, onMessageReceived, authenticateWebSocket, socket } from '../../api/apiService';
+import { Message } from '../../types';
 import './ChatViewWrapper.scss';
 
-const ChatViewWrapper: React.FC = () => {
-  const { id } = useParams<{ id: string }>();
-  const [chatAvailable, setChatAvailable] = useState<boolean | null>(null);
+interface ChatViewWrapperProps {
+  accessToken: string;
+}
 
-  const { data: chats, isLoading, error } = useQuery({
-    queryKey: ['chats'],
-    queryFn: getChats,
+const ChatViewWrapper: React.FC<ChatViewWrapperProps> = ({ accessToken }) => {
+  const { t } = useTranslation();
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [messages, setMessages] = useState<Message[]>([]);
+
+  const { data: messagesData, isLoading, error } = useQuery({
+    queryKey: ['messages', id],
+    queryFn: () => getMessages(id!),
+    enabled: !!id,
   });
 
   useEffect(() => {
-    if (chats && id) {
-      const chatExists = chats.data.some((chat: Chat) => chat.id.toString() === id);
-      setChatAvailable(chatExists);
+    if (accessToken) {
+      authenticateWebSocket(accessToken);
     }
-  }, [chats, id]);
+  
+    const handleMessage = (message: Message) => {
+      console.log('New message received:', message); 
+      setMessages((prevMessages) => [...prevMessages, message]);
+    };
+  
+    onMessageReceived(handleMessage);
+  
+    return () => {
+      socket.off('message', handleMessage);
+    };
+  }, [accessToken, id]);
+  
 
-  if (isLoading) return <div>Loading...</div>;
-  if (error) return <div>Error loading chats</div>;
+  useEffect(() => {
+    if (!id) {
+      navigate('/', { replace: true });
+    } else if (messagesData) {
+      setMessages(messagesData.data);
+    }
+  }, [id, messagesData, navigate]);
 
-  if (chatAvailable === false) {
-    return <div className="chat-not-available">Chat is not found</div>;
+  if (isLoading) return <div>{t('loadingMessages')}</div>;
+  if (error) {
+    console.error('Error loading messages:', error);
+    return <div>{t('errorLoadingMessages')}</div>;
   }
 
-  if (chatAvailable === null) {
-    return <div>Checking chat availability...</div>;
+  if (!messagesData || messages.length === 0) {
+    return <div>{t('noMessagesFound')}</div>;
   }
 
   return (
     <div className="chat-view">
-      <ChatView chatId={id!} />
-      <MessageInput chatId={id!} />
+      <ChatView messages={messages} />
+      <MessageInput chatId={id!} accessToken={accessToken} />
     </div>
   );
 };
 
 export default ChatViewWrapper;
 
-src/components/MessageInput/MessageInput.tsx:
+src/components/ErrorBoundary.tsx:
 
-import React, { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { createMessage } from '../../api/apiService';
-import { CreateMessageData, Message } from '../../types';
-import { AxiosResponse } from 'axios';
-import './MessageInput.scss'
+import { Component, ErrorInfo, ReactNode } from 'react';
+import * as Sentry from '@sentry/react';  
 
-interface MessageInputProps {
-  chatId: string;
+interface ErrorBoundaryProps {
+  children: ReactNode;
 }
 
-const MessageInput: React.FC<MessageInputProps> = ({ chatId }) => {
-  const [text, setText] = useState('');
-  const queryClient = useQueryClient();
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error?: Error;
+}
 
-  const mutation = useMutation<AxiosResponse<Message>, Error, CreateMessageData>({
-    mutationFn: (data: CreateMessageData) => createMessage(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['messages', chatId] });
-      setText(''); 
-    },
-  });
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false };
+  }
 
-  const handleSubmit = (event: React.FormEvent) => {
-    event.preventDefault();
-    if (text.trim()) {
-      mutation.mutate({ text, chatId });
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('Uncaught error:', error, errorInfo);
+
+    Sentry.captureException(error, {
+      extra: {
+        componentStack: errorInfo.componentStack,
+      },
+    });
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div>
+          <h1>Something went wrong.</h1>
+          {this.state.error && <pre>{this.state.error.message}</pre>}
+        </div>
+      );
     }
+
+    return this.props.children;
+  }
+}
+
+export default ErrorBoundary;
+
+src/components/FileDropZone.tsx:
+
+import React, { useState, useRef } from 'react';
+import './FileDropZone.scss';
+
+interface FileDropZoneProps {
+  onFileDrop: (files: File[]) => void;
+}
+
+const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileDrop }) => {
+  const [dragging, setDragging] = useState(false);
+  const [files, setFiles] = useState<File[]>([]);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleDragOver = (event: React.DragEvent) => {
+    event.preventDefault();
+    setDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setDragging(false);
+  };
+
+  const handleDrop = (event: React.DragEvent) => {
+    event.preventDefault();
+    setDragging(false);
+    const droppedFiles = Array.from(event.dataTransfer.files);
+    handleFiles(droppedFiles);
+  };
+
+  const handleFiles = (droppedFiles: File[]) => {
+    const validFiles = droppedFiles.filter(file => validateFile(file));
+    setFiles([...files, ...validFiles]);
+    onFileDrop(validFiles);
+  };
+
+  const validateFile = (file: File) => {
+    const validTypes = ['image/jpeg', 'image/png', 'application/pdf'];
+    if (!validTypes.includes(file.type)) {
+      alert(`File type not supported: ${file.type}`);
+      return false;
+    }
+    return true;
+  };
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(event.target.files || []);
+    handleFiles(selectedFiles);
+  };
+
+  const removeFile = (index: number) => {
+    const updatedFiles = files.filter((_, i) => i !== index);
+    setFiles(updatedFiles);
+  };
+
+  const handleClick = () => {
+    inputRef.current?.click();
   };
 
   return (
-    <form className="message-input-form" onSubmit={handleSubmit}>
+    <div
+      className={`file-drop-zone ${dragging ? 'dragging' : ''}`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      onClick={handleClick}
+    >
       <input
-        type="text"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="Type a message"
+        type="file"
+        multiple
+        ref={inputRef}
+        style={{ display: 'none' }}
+        onChange={handleFileChange}
       />
-      <button type="submit" disabled={mutation.status === 'pending'}>
-        {mutation.status === 'pending' ? 'Sending...' : 'Send'}
-      </button>
-    </form>
+      {files.length === 0 ? (
+        <p>Drag & drop files here, or click to select files</p>
+      ) : (
+        <div className="file-preview">
+          {files.map((file, index) => (
+            <div key={index} className="file-item">
+              {file.type.startsWith('image/') ? (
+                <img src={URL.createObjectURL(file)} alt={file.name} className="file-thumbnail" />
+              ) : (
+                <div className="file-icon">📄</div>
+              )}
+              <span>{file.name}</span>
+              <button onClick={() => removeFile(index)}>Remove</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default FileDropZone;
+
+src/components/MessageInput.tsx:
+
+import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
+import { sendMessage, onMessageReceived, authenticateWebSocket, socket } from '../../api/apiService';
+import { Message } from '../../types';  
+import FileDropZone from '../FileDropZone/FileDropZone';
+import './MessageInput.scss';
+
+interface MessageInputProps {
+  chatId: string;
+  accessToken: string;
+}
+
+const MessageInput: React.FC<MessageInputProps> = ({ chatId, accessToken }) => {
+  const { t } = useTranslation();
+  const [text, setText] = useState('');
+  const [files, setFiles] = useState<File[]>([]);
+
+  useEffect(() => {
+    authenticateWebSocket(accessToken);
+
+    const handleMessage = (message: Message) => {  
+      console.log('New message received:', message);
+    };
+
+    onMessageReceived(handleMessage);
+
+    return () => {
+      socket.off('message', handleMessage); 
+    };
+  }, [accessToken]);
+
+  const handleFileDrop = (droppedFiles: File[]) => {
+    setFiles(droppedFiles);
+  };
+
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    console.log('Send button clicked'); 
+    if (text.trim() || files.length > 0) {
+      sendMessage(chatId, text, () => {
+        setText('');
+        setFiles([]);
+        playSound();
+      });
+    }
+  };
+  
+
+  const playSound = () => {
+    const audio = new Audio('https://audio.jukehost.co.uk/CPArujSWt5CZB1KzoQCu7RSbmZxjpFuM');
+    audio.play();
+  };
+
+  return (
+    <div>
+      <FileDropZone onFileDrop={handleFileDrop} />
+      <form className="message-input-form" onSubmit={handleSubmit}>
+        <input
+          type="text"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={t('typeAMessage')}
+        />
+        <button type="submit">
+          {t('send')}
+        </button>
+      </form>
+    </div>
   );
 };
 
 export default MessageInput;
 
-src/components/MessageInput/MessageInput.tsx:
+src/components/Switcher.tsx:
 
-import React, { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { createMessage } from '../../api/apiService';
-import { CreateMessageData, Message } from '../../types';
-import { AxiosResponse } from 'axios';
-import './MessageInput.scss'
+import React from 'react';
+import { useTranslation } from 'react-i18next';
+import { motion } from 'framer-motion';
+import './Switcher.scss';
 
-interface MessageInputProps {
-  chatId: string;
-}
+const LanguageSwitcher: React.FC = () => {
+  const { i18n } = useTranslation();
+  const isEnglish = i18n.language === 'en';
 
-const MessageInput: React.FC<MessageInputProps> = ({ chatId }) => {
-  const [text, setText] = useState('');
-  const queryClient = useQueryClient();
-
-  const mutation = useMutation<AxiosResponse<Message>, Error, CreateMessageData>({
-    mutationFn: (data: CreateMessageData) => createMessage(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['messages', chatId] });
-      setText(''); 
-    },
-  });
-
-  const handleSubmit = (event: React.FormEvent) => {
-    event.preventDefault();
-    if (text.trim()) {
-      mutation.mutate({ text, chatId });
-    }
+  const handleLanguageChange = (lng: string) => {
+    i18n.changeLanguage(lng);
   };
 
   return (
-    <form className="message-input-form" onSubmit={handleSubmit}>
-      <input
-        type="text"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="Type a message"
-      />
-      <button type="submit" disabled={mutation.status === 'pending'}>
-        {mutation.status === 'pending' ? 'Sending...' : 'Send'}
-      </button>
-    </form>
+    <div className="language-switcher">
+      <div className="switch-container">
+        <motion.div
+          className="switch"
+          initial={isEnglish ? { x: 0 } : { x: '47px' }}
+          animate={isEnglish ? { x: 0 } : { x: '47px' }}
+          transition={{ type: 'tween', duration: 0.1 }}
+        />
+        <div
+          className={`language-option ${isEnglish ? 'active' : ''}`}
+          onClick={() => handleLanguageChange('en')}
+        >
+          EN
+        </div>
+        <div
+          className={`language-option ${!isEnglish ? 'active' : ''}`}
+          onClick={() => handleLanguageChange('ru')}
+        >
+          RU
+        </div>
+      </div>
+    </div>
   );
 };
 
-export default MessageInput;
+export default LanguageSwitcher;
+
+src/hooks/useAuth.tsx:
+
+import { useState, useEffect } from 'react';
+
+const useAuth = () => {
+  const [accessToken, setAccessToken] = useState<string | null>(() => {
+    return localStorage.getItem('accessToken');
+  });
+
+  useEffect(() => {
+    if (accessToken) {
+      localStorage.setItem('accessToken', accessToken);
+    } else {
+      localStorage.removeItem('accessToken');
+    }
+  }, [accessToken]);
+
+  return {
+    accessToken,
+    setAccessToken,
+  };
+};
+
+export default useAuth;
+
+App.tsx:
+
+import React, { Suspense, useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route, useNavigate } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import useAuth from './hooks/useAuth';
+import ErrorBoundary from './components/ErrorBoundary/ErrorBoundary';
+import LanguageSwitcher from './components/Switcher/Switcher';
+
+const queryClient = new QueryClient();
+
+const ChatList = React.lazy(() => import('./components/ChatList/ChatList'));
+const ChatViewWrapper = React.lazy(() => import('./components/ChatViewWrapper/ChatViewWrapper'));
+const AuthForm = React.lazy(() => import('./components/AuthForm/AuthForm'));
+
+const App: React.FC = () => {
+  const { accessToken, setAccessToken } = useAuth();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (accessToken) {
+      navigate('/chat/1', { replace: true });
+    }
+  }, [accessToken, navigate]);
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <ErrorBoundary>
+        <Suspense fallback={<div>Loading...</div>}>
+          <LanguageSwitcher />
+          {accessToken ? (
+            <div className="app-container">
+              <div className="chat-list-container">
+                <ChatList />
+              </div>
+              <div className="chat-view-container">
+                <Routes>
+                  <Route path="/chat/:id" element={<ChatViewWrapper accessToken={accessToken} />} />
+                  <Route path="/" element={<div>Welcome! Please select a chat.</div>} />
+                  <Route path="*" element={<div>404 - Not Found</div>} />
+                </Routes>
+              </div>
+            </div>
+          ) : (
+            <AuthForm onAuthSuccess={(token) => setAccessToken(token)} />
+          )}
+        </Suspense>
+      </ErrorBoundary>
+    </QueryClientProvider>
+  );
+};
+
+const WrappedApp: React.FC = () => (
+  <Router>
+    <App />
+  </Router>
+);
+
+export default WrappedApp;
 
 src/types/index.ts:
 
 export interface Chat {
-    id: number;
-    title: string; 
-  }
-  
-  export interface Message {
-    id: string;
-    text: string;
-    chatId: string;
-  }
-  
-  export interface CreateChatData {
-    title: string;
-  }
-  
-  export interface CreateMessageData {
-    text: string;
-    chatId: string;
-  }
-
-  src/App.tsx:
-
- import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import ChatList from './components/ChatList/ChatList';
-import ChatViewWrapper from './components/ChatViewWrapper/ChatViewWrapper';
-
-const queryClient = new QueryClient();
-
-function App() {
-  return (
-    <QueryClientProvider client={queryClient}>
-      <Router>
-        <div className="app-container">
-          <div className="chat-list-container">
-            <ChatList />
-          </div>
-          <div className="chat-view-container">
-            <Routes>
-              <Route path="/chat/:id" element={<ChatViewWrapper />} />
-              <Route path="/" element={<div>Select chat here</div>} />
-            </Routes>
-          </div>
-        </div>
-      </Router>
-    </QueryClientProvider>
-  );
+  id: number;
+  title: string; 
 }
 
-export default App;
+export interface Author {
+  id: number;
+  email: string;
+}
 
-ChatList.scss:
+export interface Message {
+  id: string;
+  text: string;
+  chatId: string;
+  author: Author;
+  timestamp: string;
+}
 
-.chat-list {
-    ul {
-      list-style: none;
-      padding: 0;
-      
-      li {
-        margin-bottom: 10px;
-  
-        a {
-          text-decoration: none;
-          color: #333;
-          padding: 8px;
-          display: block;
-          border-radius: 4px;
-          transition: background-color 0.2s;
-  
-          &:hover {
-            background-color: #eee;
-          }
-        }
-      }
-    }
-  }
-  
-  ChatViewWrapper.scss:
+export interface SendMessageData {
+  text: string;
+  chatId: string;
+  accessToken: string;
+}
 
-.chat-view {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-  }
-  
-  .no-chat-selected {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 100%;
-    font-size: 18px;
-    color: #888;
-  }
-  
-  MessageInput.scss:
+export interface CreateChatData {
+  title: string;
+}
 
-  .message-input-form {
-    display: flex;
-    margin-top: auto;
-    
-    input {
-      flex-grow: 1;
-      padding: 8px;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-      margin-right: 10px;
-    }
-  
-    button {
-      padding: 8px 16px;
-      background-color: #007bff;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      transition: background-color 0.2s;
-  
-      &:disabled {
-        background-color: #999;
-      }
-    }
-  }
-  
+export interface CreateMessageData {
+  text: string;
+  chatId: string;
+}
+
+export interface TokenResponse {
+  access: string;
+  refresh: string;
+}

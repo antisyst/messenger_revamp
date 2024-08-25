@@ -1,43 +1,69 @@
 import React, { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import ChatView from '../ChatView/ChatView';
 import MessageInput from '../MessageInput/MessageInput';
-import { getChats } from '../../api/apiService';
-import { Chat } from '../../types';
+import { getMessages, onMessageReceived, authenticateWebSocket, socket } from '../../api/apiService';
+import { Message } from '../../types';
 import './ChatViewWrapper.scss';
 
-const ChatViewWrapper: React.FC = () => {
-  const { id } = useParams<{ id: string }>();
-  const [chatAvailable, setChatAvailable] = useState<boolean | null>(null);
+interface ChatViewWrapperProps {
+  accessToken: string;
+}
 
-  const { data: chats, isLoading, error } = useQuery({
-    queryKey: ['chats'],
-    queryFn: getChats,
+const ChatViewWrapper: React.FC<ChatViewWrapperProps> = ({ accessToken }) => {
+  const { t } = useTranslation();
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [messages, setMessages] = useState<Message[]>([]);
+
+  const { data: messagesData, isLoading, error } = useQuery({
+    queryKey: ['messages', id],
+    queryFn: () => getMessages(id!),
+    enabled: !!id,
   });
 
   useEffect(() => {
-    if (chats && id) {
-      const chatExists = chats.data.some((chat: Chat) => chat.id.toString() === id);
-      setChatAvailable(chatExists);
+    if (accessToken) {
+      authenticateWebSocket(accessToken);
     }
-  }, [chats, id]);
+  
+    const handleMessage = (message: Message) => {
+      console.log('New message received:', message); 
+      setMessages((prevMessages) => [...prevMessages, message]);
+    };
+  
+    onMessageReceived(handleMessage);
+  
+    return () => {
+      socket.off('message', handleMessage);
+    };
+  }, [accessToken, id]);
+  
 
-  if (isLoading) return <div className='loader-layout'><div className='loader'/></div>;
-  if (error) return <div>Error loading chats</div>;
+  useEffect(() => {
+    if (!id) {
+      navigate('/', { replace: true });
+    } else if (messagesData) {
+      setMessages(messagesData.data);
+    }
+  }, [id, messagesData, navigate]);
 
-  if (chatAvailable === false) {
-    return <div className="chat-not-available">Chat is not found</div>;
+  if (isLoading) return <div>{t('loadingMessages')}</div>;
+  if (error) {
+    console.error('Error loading messages:', error);
+    return <div>{t('errorLoadingMessages')}</div>;
   }
 
-  if (chatAvailable === null) {
-    return <div>Checking chat availability...</div>;
+  if (!messagesData || messages.length === 0) {
+    return <div>{t('noMessagesFound')}</div>;
   }
 
   return (
     <div className="chat-view">
-      <ChatView chatId={id!} />
-      <MessageInput chatId={id!} />
+      <ChatView messages={messages} />
+      <MessageInput chatId={id!} accessToken={accessToken} />
     </div>
   );
 };

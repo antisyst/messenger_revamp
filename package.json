@@ -11,15 +11,20 @@
   },
   "dependencies": {
     "@react-aria/focus": "^3.18.1",
+    "@sentry/react": "^8.26.0",
     "@tanstack/react-query": "^5.51.23",
     "@tanstack/react-query-devtools": "^5.51.23",
     "axios": "^1.7.4",
     "framer-motion": "^11.3.28",
+    "i18next": "^23.14.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-draggable": "^4.4.6",
     "react-hook-form": "^7.52.2",
+    "react-i18next": "^15.0.1",
     "react-router-dom": "^6.26.1",
     "sass": "^1.77.8",
+    "socket.io-client": "^4.7.5",
     "zustand": "^4.5.5"
   },
   "devDependencies": {
